@@ -1,128 +1,174 @@
 #include "../../obs-internal.h"
+
 #include "wasapi-output.h"
 
 #include <propsys.h>
-#include <mmdeviceapi.h>
+
+#ifdef __MINGW32__
+
+#ifdef DEFINE_PROPERTYKEY
+#undef DEFINE_PROPERTYKEY
+#endif
+#define DEFINE_PROPERTYKEY(id, a, b, c, d, e, f, g, h, i, j, k, l) \
+	const PROPERTYKEY id = {{a,                                \
+				 b,                                \
+				 c,                                \
+				 {                                 \
+					 d,                        \
+					 e,                        \
+					 f,                        \
+					 g,                        \
+					 h,                        \
+					 i,                        \
+					 j,                        \
+					 k,                        \
+				 }},                               \
+				l};
+DEFINE_PROPERTYKEY(PKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0,
+		   14);
+
+#else
+
 #include <functiondiscoverykeys_devpkey.h>
-#include <comdef.h>
-#include <wrl/client.h>
-#include <string>
 
-using Microsoft::WRL::ComPtr;
+#endif
 
-static bool GetDeviceInfo(obs_enum_audio_device_cb cb, void* data, IMMDeviceCollection* collection, UINT idx)
+static bool get_device_info(obs_enum_audio_device_cb cb, void *data, IMMDeviceCollection *collection, UINT idx)
 {
-    ComPtr<IMMDevice> device;
-    HRESULT hr = collection->Item(idx, &device);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to get device at index %u: 0x%08X", idx, hr);
-        return true; // Continue enumeration
-    }
+	IPropertyStore *store = NULL;
+	IMMDevice *device = NULL;
+	PROPVARIANT name_var;
+	char utf8_name[512];
+	WCHAR *w_id = NULL;
+	char utf8_id[512];
+	bool cont = true;
+	HRESULT hr;
 
-    LPWSTR w_id = nullptr;
-    hr = device->GetId(&w_id);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to get device ID: 0x%08X", hr);
-        return true;
-    }
-    std::wstring wstr_id(w_id);
-    CoTaskMemFree(w_id);
+	hr = collection->lpVtbl->Item(collection, idx, &device);
+	if (FAILED(hr)) {
+		goto fail;
+	}
 
-    ComPtr<IPropertyStore> store;
-    hr = device->OpenPropertyStore(STGM_READ, &store);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to open property store: 0x%08X", hr);
-        return true;
-    }
+	hr = device->lpVtbl->GetId(device, &w_id);
+	if (FAILED(hr)) {
+		goto fail;
+	}
 
-    PROPVARIANT name_var;
-    PropVariantInit(&name_var);
-    hr = store->GetValue(PKEY_Device_FriendlyName, &name_var);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to get device friendly name: 0x%08X", hr);
-        PropVariantClear(&name_var);
-        return true;
-    }
+	hr = device->lpVtbl->OpenPropertyStore(device, STGM_READ, &store);
+	if (FAILED(hr)) {
+		goto fail;
+	}
 
-    std::wstring wstr_name(name_var.pwszVal);
-    PropVariantClear(&name_var);
+	PropVariantInit(&name_var);
+	hr = store->lpVtbl->GetValue(store, &PKEY_Device_FriendlyName, &name_var);
+	if (FAILED(hr)) {
+		goto fail;
+	}
 
-    // Convert wide strings to UTF-8
-    std::string utf8_id = os_wcs_to_utf8(wstr_id.c_str());
-    std::string utf8_name = os_wcs_to_utf8(wstr_name.c_str());
+	os_wcs_to_utf8(w_id, 0, utf8_id, 512);
+	os_wcs_to_utf8(name_var.pwszVal, 0, utf8_name, 512);
 
-    bool cont = cb(data, utf8_name.c_str(), utf8_id.c_str());
-    return cont;
+	cont = cb(data, utf8_name, utf8_id);
+	PropVariantClear(&name_var);
+
+fail:
+	safe_release(store);
+	safe_release(device);
+	if (w_id)
+		CoTaskMemFree(w_id);
+	return cont;
 }
 
-void obs_enum_audio_monitoring_devices(obs_enum_audio_device_cb cb, void* data)
+void obs_enum_audio_monitoring_devices(obs_enum_audio_device_cb cb, void *data)
 {
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                  IID_PPV_ARGS(&enumerator));
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to create IMMDeviceEnumerator: 0x%08X", hr);
-        return;
-    }
+	IMMDeviceEnumerator *enumerator = NULL;
+	IMMDeviceCollection *collection = NULL;
+	UINT count;
+	HRESULT hr;
 
-    ComPtr<IMMDeviceCollection> collection;
-    hr = enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to enumerate audio endpoints: 0x%08X", hr);
-        return;
-    }
+	hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, &enumerator);
+	if (FAILED(hr)) {
+		goto fail;
+	}
 
-    UINT count = 0;
-    hr = collection->GetCount(&count);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to get device count: 0x%08X", hr);
-        return;
-    }
+	hr = enumerator->lpVtbl->EnumAudioEndpoints(enumerator, eRender, DEVICE_STATE_ACTIVE, &collection);
+	if (FAILED(hr)) {
+		goto fail;
+	}
 
-    for (UINT i = 0; i < count; ++i) {
-        if (!GetDeviceInfo(cb, data, collection.Get(), i)) {
-            break;
-        }
-    }
+	hr = collection->lpVtbl->GetCount(collection, &count);
+	if (FAILED(hr)) {
+		goto fail;
+	}
+
+	for (UINT i = 0; i < count; i++) {
+		if (!get_device_info(cb, data, collection, i)) {
+			break;
+		}
+	}
+
+fail:
+	safe_release(enumerator);
+	safe_release(collection);
 }
 
-static std::string GetDefaultDeviceId()
+static void get_default_id(char **p_id)
 {
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                  IID_PPV_ARGS(&enumerator));
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to create IMMDeviceEnumerator: 0x%08X", hr);
-        return "";
-    }
+	IMMDeviceEnumerator *immde = NULL;
+	IMMDevice *device = NULL;
+	WCHAR *w_id = NULL;
+	HRESULT hr;
 
-    ComPtr<IMMDevice> device;
-    hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to get default audio endpoint: 0x%08X", hr);
-        return "";
-    }
+	if (*p_id)
+		return;
 
-    LPWSTR w_id = nullptr;
-    hr = device->GetId(&w_id);
-    if (FAILED(hr)) {
-        blog(LOG_ERROR, "Failed to get default device ID: 0x%08X", hr);
-        return "";
-    }
-    std::wstring wstr_id(w_id);
-    CoTaskMemFree(w_id);
+	hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, &immde);
+	if (FAILED(hr)) {
+		goto fail;
+	}
 
-    return os_wcs_to_utf8(wstr_id.c_str());
+	hr = immde->lpVtbl->GetDefaultAudioEndpoint(immde, eRender, eConsole, &device);
+	if (FAILED(hr)) {
+		goto fail;
+	}
+
+	hr = device->lpVtbl->GetId(device, &w_id);
+	if (FAILED(hr)) {
+		goto fail;
+	}
+
+	os_wcs_to_utf8_ptr(w_id, 0, p_id);
+
+fail:
+	if (!*p_id)
+		*p_id = bzalloc(1);
+	if (immde)
+		immde->lpVtbl->Release(immde);
+	if (device)
+		device->lpVtbl->Release(device);
+	if (w_id)
+		CoTaskMemFree(w_id);
 }
 
-bool devices_match(const char* id1, const char* id2)
+bool devices_match(const char *id1, const char *id2)
 {
-    if (!id1 || !id2) {
-        return false;
-    }
+	char *default_id = NULL;
+	bool match;
 
-    std::string id1_str = (strcmp(id1, "default") == 0) ? GetDefaultDeviceId() : id1;
-    std::string id2_str = (strcmp(id2, "default") == 0) ? GetDefaultDeviceId() : id2;
+	if (!id1 || !id2)
+		return false;
 
-    return id1_str == id2_str;
+	if (strcmp(id1, "default") == 0) {
+		get_default_id(&default_id);
+		id1 = default_id;
+	}
+	if (strcmp(id2, "default") == 0) {
+		get_default_id(&default_id);
+		id2 = default_id;
+	}
+
+	match = strcmp(id1, id2) == 0;
+	bfree(default_id);
+
+	return match;
 }
