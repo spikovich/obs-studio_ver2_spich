@@ -69,15 +69,13 @@ static bool get_device_info(obs_enum_audio_device_cb cb, void *data,
         goto cleanup;
     }
 
-    utf8_id = os_wcs_to_utf8(w_id);
-    if (!utf8_id) {
+    if (os_wcs_to_utf8_ptr(w_id, 0, &utf8_id) == 0) {
         blog(LOG_ERROR, "Failed to convert device ID to UTF-8");
         cont = true;
         goto cleanup;
     }
 
-    utf8_name = os_wcs_to_utf8(name_var.pwszVal);
-    if (!utf8_name) {
+    if (os_wcs_to_utf8_ptr(name_var.pwszVal, 0, &utf8_name) == 0) {
         blog(LOG_ERROR, "Failed to convert device friendly name to UTF-8");
         cont = true;
         goto cleanup;
@@ -170,8 +168,7 @@ static void get_default_id(char **p_id)
         goto cleanup;
     }
 
-    utf8_id = os_wcs_to_utf8(w_id);
-    if (!utf8_id) {
+    if (os_wcs_to_utf8_ptr(w_id, 0, &utf8_id) == 0) {
         blog(LOG_ERROR, "Failed to convert default device ID to UTF-8");
         goto cleanup;
     }
